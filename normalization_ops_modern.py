@@ -2,70 +2,41 @@
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
+
 import tensorflow as tf
-import math, numpy as np, random
-from six.moves import xrange  
-
-from tensorflow.python.training import moving_averages
 
 
-
-
-def layer_norm(input_tensor, num_variables_in_tensor = 1, initial_bias_value = 0.0, scope = "layer_norm"):
+def layer_norm(inputs, num_splits=1, bias_start=0.0, scope="layer_norm"):
   with tf.variable_scope(scope):
     '''for clarification of shapes:
-    input_tensor = [batch_size, num_neurons]
+    inputs = [batch_size, num_units]
     mean = [batch_size]
     variance = [batch_size]
-    alpha = [num_neurons]
-    bias = [num_neurons]
-    output = [batch_size, num_neurons]
+    alpha = [num_units]
+    bias = [num_units]
+    output = [batch_size, num_units]
     '''
-    input_tensor_shape_list = input_tensor.get_shape().as_list()
+    num_units = inputs.get_shape().as_list()[1] // num_splits
 
-    num_neurons = input_tensor_shape_list[1]/num_variables_in_tensor
+    alpha = tf.get_variable('alpha', [num_splits, num_units],
+                            initializer=tf.constant_initializer(1.0))
+    bias = tf.get_variable('bias', [num_splits, num_units],
+                           initializer=tf.constant_initializer(bias_start))
 
+    new_inputs = tf.reshape(inputs, [-1, num_splits, num_units])
+    mean, variance = moments_for_layer_norm(new_inputs, axes=[2])
+    outputs = (alpha * (new_inputs - mean)) / variance + bias
 
-
-    alpha = tf.get_variable('layer_norm_alpha', [num_neurons * num_variables_in_tensor], 
-            initializer = tf.constant_initializer(1.0))
-
-    bias = tf.get_variable('layer_norm_bias', [num_neurons * num_variables_in_tensor], 
-            initializer = tf.constant_initializer(initial_bias_value))
-
-    if num_variables_in_tensor == 1:
-      input_tensor_list = [input_tensor]
-      alpha_list = [alpha]
-      bias_list = [bias]
-
-    else:
-      input_tensor_list = tf.split(1, num_variables_in_tensor, input_tensor)
-      alpha_list = tf.split(0, num_variables_in_tensor, alpha)
-      bias_list = tf.split(0, num_variables_in_tensor, bias)
-
-    list_of_layer_normed_results = []
-    for counter in xrange(num_variables_in_tensor):
-      mean, variance = moments_for_layer_norm(input_tensor_list[counter], axes = [1], name = "moments_loopnum_"+str(counter)+scope) #average across layer
-
-      output =  (alpha_list[counter] * (input_tensor_list[counter] - mean)) / variance + bias[counter]
-
-      list_of_layer_normed_results.append(output)
-
-    if num_variables_in_tensor == 1:
-      return list_of_layer_normed_results[0]
-    else:
-      return tf.concat(1, list_of_layer_normed_results)
+    return tf.reshape(outputs, [-1, num_splits * num_units])
 
 
-def moments_for_layer_norm(x, axes = 1, name = None, epsilon = 0.001):
+def moments_for_layer_norm(x, axes, name=None, epsilon=0.001):
   '''output for mean and variance should be [batch_size]'''
 
   if not isinstance(axes, list): axes = list(axes)
 
-  with tf.op_scope([x, axes], name, "moments"):
-    mean = tf.reduce_mean(x, axes, keep_dims = True)
+  with tf.name_scope(values=[x, axes], name=name, default_name="moments"):
+    mean = tf.reduce_mean(x, axes, keep_dims=True)
+    variance = tf.sqrt(tf.reduce_mean(tf.square(x - mean), axes, keep_dims=True) + epsilon)
 
-    variance = tf.sqrt(tf.reduce_mean(tf.square(x - mean), axes, keep_dims = True) + epsilon)
-
-    return mean, variance 
-
+  return mean, variance

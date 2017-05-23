@@ -3,19 +3,15 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 import math, numpy as np
-from six.moves import xrange 
+from six.moves import xrange
 import tensorflow as tf
 
-# from multiplicative_integration import multiplicative_integration, multiplicative_integration_for_multiple_inputs
-
-from tensorflow.python.ops.nn import rnn_cell
-import highway_network_modern
 from multiplicative_integration_modern import multiplicative_integration
 from normalization_ops_modern import layer_norm
 
 from linear_modern import linear
 
-RNNCell = rnn_cell.RNNCell
+RNNCell = tf.contrib.rnn.RNNCell
 
 
 class HighwayRNNCell(RNNCell):
@@ -85,16 +81,16 @@ class BasicGatedCell(RNNCell):
     return self._num_units
 
   def __call__(self, inputs, state, timestep = 0,scope=None):
-    with tf.variable_scope(scope or type(self).__name__):       
+    with tf.variable_scope(scope or type(self).__name__):
       with tf.variable_scope("Gates"):  # Forget Gate bias starts as 1.0 -- TODO: double check if this is correct
         if self.use_multiplicative_integration:
           gated_factor = multiplicative_integration([inputs, state], self._num_units, self.forget_bias_initialization)
         else:
           gated_factor = linear([inputs, state], self._num_units, True, self.forget_bias_initialization)
 
-        gated_factor = tf.sigmoid(gated_factor)  
+        gated_factor = tf.sigmoid(gated_factor)
 
-      with tf.variable_scope("Candidate"): 
+      with tf.variable_scope("Candidate"):
         c = tf.tanh(linear([inputs], self._num_units, True, 0.0))
 
         if self.use_recurrent_dropout and self.is_training:
@@ -133,16 +129,16 @@ class MGUCell(RNNCell):
     return self._num_units
 
   def __call__(self, inputs, state, timestep = 0,scope=None):
-    with tf.variable_scope(scope or type(self).__name__):       
+    with tf.variable_scope(scope or type(self).__name__):
       with tf.variable_scope("Gates"):  # Forget Gate bias starts as 1.0 -- TODO: double check if this is correct
         if self.use_multiplicative_integration:
           gated_factor = multiplicative_integration([inputs, state], self._num_units, self.forget_bias_initialization)
         else:
           gated_factor = linear([inputs, state], self._num_units, True, self.forget_bias_initialization)
 
-        gated_factor = tf.sigmoid(gated_factor)  
+        gated_factor = tf.sigmoid(gated_factor)
 
-      with tf.variable_scope("Candidate"): 
+      with tf.variable_scope("Candidate"):
         if self.use_multiplicative_integration:
           c = tf.tanh(multiplicative_integration([inputs, state*gated_factor], self._num_units, 0.0))
         else:
@@ -192,13 +188,13 @@ class LSTMCell_MemoryArray(RNNCell):
   def __call__(self, inputs, state, timestep = 0, scope=None):
     with tf.variable_scope(scope or type(self).__name__):  # "BasicLSTMCell"
       # Parameters of gates are concatenated into one multiply for efficiency.
-      hidden_state_plus_c_list = tf.split(1, self.num_memory_arrays + 1, state)
+      hidden_state_plus_c_list = tf.split(axis=1, num_or_size_splits=self.num_memory_arrays + 1, value=state)
 
       h = hidden_state_plus_c_list[0]
       c_list = hidden_state_plus_c_list[1:]
 
       '''very large matrix multiplication to speed up procedure -- will split variables out later'''
-      
+
       if self.use_multiplicative_integration:
         concat = multiplicative_integration([inputs, h], self._num_units * 4 * self.num_memory_arrays, 0.0)
       else:
@@ -207,7 +203,7 @@ class LSTMCell_MemoryArray(RNNCell):
       if self.use_layer_normalization: concat = layer_norm(concat, num_variables_in_tensor = 4 * self.num_memory_arrays)
 
       # i = input_gate, j = new_input, f = forget_gate, o = output_gate -- comes in sets of fours
-      all_vars_list = tf.split(1, 4 * self.num_memory_arrays, concat)
+      all_vars_list = tf.split(axis=1, num_or_size_splits=4 * self.num_memory_arrays, value=concat)
 
       '''memory array loop'''
       new_c_list, new_h_list = [], []
@@ -221,27 +217,21 @@ class LSTMCell_MemoryArray(RNNCell):
         if self.use_recurrent_dropout and self.is_training:
           input_contribution = tf.nn.dropout(tf.tanh(j), self.recurrent_dropout_factor)
         else:
-          input_contribution = tf.tanh(j) 
+          input_contribution = tf.tanh(j)
 
         new_c_list.append(c_list[array_counter] * tf.sigmoid(f + self._forget_bias) + tf.sigmoid(i) * input_contribution)
 
-        if self.use_layer_normalization: 
+        if self.use_layer_normalization:
           new_c = layer_norm(new_c_list[-1])
         else:
           new_c = new_c_list[-1]
-          
+
         new_h_list.append(tf.tanh(new_c) * tf.sigmoid(o))
 
       '''sum all new_h components -- could instead do a mean -- but investigate that later'''
       new_h = tf.add_n(new_h_list)
-  
-    return new_h, tf.concat(1, [new_h] + new_c_list) #purposely reversed
 
-
-
-
-
-
+    return new_h, tf.concat(axis=1, values=[new_h] + new_c_list) #purposely reversed
 
 
 class JZS1Cell(RNNCell):
@@ -249,7 +239,7 @@ class JZS1Cell(RNNCell):
 
   def __init__(self, num_units, gpu_for_layer = 0, weight_initializer = "uniform_unit", orthogonal_scale_factor = 1.1):
     self._num_units = num_units
-    self._gpu_for_layer = gpu_for_layer 
+    self._gpu_for_layer = gpu_for_layer
     self._weight_initializer = weight_initializer
     self._orthogonal_scale_factor = orthogonal_scale_factor
 
@@ -273,8 +263,8 @@ class JZS1Cell(RNNCell):
           # We start with bias of 1.0 to not reset and not update.
           '''equation 1 z = sigm(WxzXt+Bz), x_t is inputs'''
 
-          z = tf.sigmoid(linear([inputs], 
-                            self._num_units, True, 1.0, weight_initializer = self._weight_initializer, orthogonal_scale_factor = self._orthogonal_scale_factor)) 
+          z = tf.sigmoid(linear([inputs],
+                            self._num_units, True, 1.0, weight_initializer = self._weight_initializer, orthogonal_scale_factor = self._orthogonal_scale_factor))
 
         with tf.variable_scope("Rinput"):
           '''equation 2 r = sigm(WxrXt+Whrht+Br), h_t is the previous state'''
@@ -283,15 +273,15 @@ class JZS1Cell(RNNCell):
                             self._num_units, True, 1.0, weight_initializer = self._weight_initializer, orthogonal_scale_factor = self._orthogonal_scale_factor))
           '''equation 3'''
         with tf.variable_scope("Candidate"):
-          component_0 = linear([r*state], 
-                            self._num_units, True) 
+          component_0 = linear([r*state],
+                            self._num_units, True)
           component_1 = tf.tanh(tf.tanh(inputs) + component_0)
           component_2 = component_1*z
           component_3 = state*(1 - z)
 
         h_t = component_2 + component_3
 
-      return h_t, h_t #there is only one hidden state output to keep track of. 
+      return h_t, h_t #there is only one hidden state output to keep track of.
       #This makes it more mem efficient than LSTM
 
 
@@ -300,7 +290,7 @@ class JZS2Cell(RNNCell):
 
   def __init__(self, num_units, gpu_for_layer = 0, weight_initializer = "uniform_unit", orthogonal_scale_factor = 1.1):
     self._num_units = num_units
-    self._gpu_for_layer = gpu_for_layer 
+    self._gpu_for_layer = gpu_for_layer
     self._weight_initializer = weight_initializer
     self._orthogonal_scale_factor = orthogonal_scale_factor
 
@@ -323,7 +313,7 @@ class JZS2Cell(RNNCell):
         with tf.variable_scope("Zinput"):  # Reset gate and update gate.
           '''equation 1'''
 
-          z = tf.sigmoid(linear([inputs, state], 
+          z = tf.sigmoid(linear([inputs, state],
                             self._num_units, True, 1.0, weight_initializer = self._weight_initializer, orthogonal_scale_factor = self._orthogonal_scale_factor))
 
           '''equation 2 '''
@@ -336,13 +326,13 @@ class JZS2Cell(RNNCell):
 
           component_0 = linear([state*r,inputs],
                             self._num_units, True)
-          
+
           component_2 = (tf.tanh(component_0))*z
           component_3 = state*(1 - z)
 
         h_t = component_2 + component_3
 
-      return h_t, h_t #there is only one hidden state output to keep track of. 
+      return h_t, h_t #there is only one hidden state output to keep track of.
         #This makes it more mem efficient than LSTM
 
 class JZS3Cell(RNNCell):
@@ -350,7 +340,7 @@ class JZS3Cell(RNNCell):
 
   def __init__(self, num_units, gpu_for_layer = 0, weight_initializer = "uniform_unit", orthogonal_scale_factor = 1.1):
     self._num_units = num_units
-    self._gpu_for_layer = gpu_for_layer 
+    self._gpu_for_layer = gpu_for_layer
     self._weight_initializer = weight_initializer
     self._orthogonal_scale_factor = orthogonal_scale_factor
 
@@ -374,7 +364,7 @@ class JZS3Cell(RNNCell):
           # We start with bias of 1.0 to not reset and not update.
           '''equation 1'''
 
-          z = tf.sigmoid(linear([inputs, tf.tanh(state)], 
+          z = tf.sigmoid(linear([inputs, tf.tanh(state)],
                             self._num_units, True, 1.0, weight_initializer = self._weight_initializer, orthogonal_scale_factor = self._orthogonal_scale_factor))
 
           '''equation 2'''
@@ -385,13 +375,13 @@ class JZS3Cell(RNNCell):
         with tf.variable_scope("Candidate"):
           component_0 = linear([state*r,inputs],
                             self._num_units, True)
-          
+
           component_2 = (tf.tanh(component_0))*z
           component_3 = state*(1 - z)
 
         h_t = component_2 + component_3
 
-      return h_t, h_t #there is only one hidden state output to keep track of. 
+      return h_t, h_t #there is only one hidden state output to keep track of.
       #This makes it more mem efficient than LSTM
 
 
@@ -426,7 +416,7 @@ class Delta_RNN(RNNCell):
     """
 
     assert inner_function_output.get_shape().as_list() == past_hidden_state.get_shape().as_list()
-    r = tf.get_variable("outer_function_gate", [self._num_units], dtype=tf.float32, initializer=tf.zeros_initializer)
+    r = tf.get_variable("outer_function_gate", [self._num_units], dtype=tf.float32, initializer=tf.zeros_initializer())
 
     # Equation 5 in Delta Rnn Paper
     if wx_parameterization_gate:
@@ -448,13 +438,10 @@ class Delta_RNN(RNNCell):
     # We make this a private variable to be reused in the _outer_function
     self._W_x_inputs = linear(inputs, self._num_units, True)
 
-    alpha = tf.get_variable("alpha", [self._num_units], dtype=tf.float32, initializer=tf.ones_initializer)
-
-    beta_one = tf.get_variable("beta_one", [self._num_units], dtype=tf.float32, initializer=tf.ones_initializer)
-
-    beta_two = tf.get_variable("beta_two", [self._num_units], dtype=tf.float32, initializer=tf.ones_initializer)
-
-    z_t_bias = tf.get_variable("z_t_bias", [self._num_units], dtype=tf.float32, initializer=tf.zeros_initializer)
+    alpha = tf.get_variable("alpha", [self._num_units], dtype=tf.float32, initializer=tf.ones_initializer())
+    beta_one = tf.get_variable("beta_one", [self._num_units], dtype=tf.float32, initializer=tf.ones_initializer())
+    beta_two = tf.get_variable("beta_two", [self._num_units], dtype=tf.float32, initializer=tf.ones_initializer())
+    z_t_bias = tf.get_variable("z_t_bias", [self._num_units], dtype=tf.float32, initializer=tf.zeros_initializer())
 
     # Second Order Cell Calculations
     d_1_t = alpha * V_x_d * self._W_x_inputs
@@ -464,10 +451,8 @@ class Delta_RNN(RNNCell):
 
     return z_t
 
-
-
   def __call__(self, inputs, state, scope=None):
     inner_function_output = self._inner_function(inputs, state)
-    output = self._outer_function(inner_function_output, state)  
+    output = self._outer_function(inner_function_output, state)
 
-    return output, output #there is only one hidden state output to keep track of. 
+    return output, output #there is only one hidden state output to keep track of.
